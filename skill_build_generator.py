@@ -1,24 +1,27 @@
 class BitStream:
-    """Gère l'écriture de bits et la conversion Base64 spécifique à Guild Wars."""
+    """
+    Gère l'écriture de bits en 'Lowest-bit-first order' (Little Endian)
+    et l'encodage Base64 spécifique à Guild Wars.
+    """
     def __init__(self):
         self.data = 0
         self.bit_count = 0
 
     def write(self, value, num_bits):
-        # Guild Wars stocke les données en Little Endian
+        # On écrit les bits du poids faible vers le poids fort
         self.data |= (value << self.bit_count)
         self.bit_count += num_bits
 
     def get_gw_base64(self):
-        # Alphabet Base64 standard
+        # Alphabet Base64 standard (A-Z, a-z, 0-9, +, /)
         chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
         encoded = ""
         temp_data = self.data
         current_bits = self.bit_count
         
-        # On découpe par tranches de 6 bits pour obtenir les caractères
+        # Le format GW convertit le flux binaire en caractères par tranches de 6 bits
         while current_bits > 0:
-            val = temp_data & 0x3F # Masque pour prendre les 6 premiers bits
+            val = temp_data & 0x3F # Prend les 6 premiers bits
             encoded += chars[val]
             temp_data >>= 6
             current_bits -= 6
@@ -26,58 +29,14 @@ class BitStream:
 
 class BuildTemplate:
     """
-    Génère un Template Code Guild Wars 1 valide.
-    Gère la conversion ID Global -> ID Local.
+    Générateur de Template conforme à la doc officielle.
+    Supporte les tailles de bits dynamiques pour Attributs et Skills.
     """
     
     PROFS = {
         'None': 0, 'Warrior': 1, 'Ranger': 2, 'Monk': 3, 'Necromancer': 4,
         'Mesmer': 5, 'Elementalist': 6, 'Assassin': 7, 'Ritualist': 8,
         'Paragon': 9, 'Dervish': 10
-    }
-
-    # MAPPING: Global ID (CSV) -> Local ID (0-15 pour le Template)
-    # Basé sur l'ordre standard des attributs dans le jeu (Primary = toujours 0)
-    ATTR_MAP = {
-        # Mesmer
-        0: 0, # Fast Casting (Primary)
-        1: 1, 2: 2, 3: 3, # Illusion, Domination, Inspiration
-        
-        # Necromancer
-        6: 0, # Soul Reaping (Primary)
-        7: 1, 5: 2, 4: 3, # Curses, Death, Blood (Ordre std: Curses, Death, Blood)
-        
-        # Elementalist
-        12: 0, # Energy Storage (Primary)
-        8: 1, 9: 2, 10: 3, 11: 4, # Air, Earth, Fire, Water
-        
-        # Monk
-        16: 0, # Divine Favor (Primary)
-        13: 1, 14: 2, 15: 3, # Healing, Smiting, Protection
-        
-        # Warrior
-        17: 0, # Strength (Primary)
-        18: 1, 19: 2, 20: 3, 21: 4, # Axe, Hammer, Sword, Tactics
-        
-        # Ranger
-        23: 0, # Expertise (Primary)
-        22: 1, 24: 2, 25: 3, # Beast, Wilderness, Marksmanship
-        
-        # Assassin
-        35: 0, # Critical Strikes (Primary)
-        29: 1, 30: 2, 31: 3, # Dagger, Deadly, Shadow
-        
-        # Ritualist
-        36: 0, # Spawning Power (Primary)
-        32: 1, 33: 2, 34: 3, # Communing, Restoration, Channeling
-        
-        # Paragon
-        40: 0, # Leadership (Primary)
-        37: 1, 38: 2, 39: 3, # Spear, Command, Motivation
-        
-        # Dervish
-        44: 0, # Mysticism (Primary)
-        41: 1, 42: 2, 43: 3  # Scythe, Wind, Earth
     }
 
     def __init__(self):
@@ -87,54 +46,90 @@ class BuildTemplate:
         self.skills = [0] * 8 
 
     def set_profession(self, primary, secondary='None'):
-        # Gestion hybride : ID (int) ou Nom (str)
+        # Accepte soit le Nom (str) soit l'ID (int)
         if isinstance(primary, int): self.primary_prof = primary
         else: self.primary_prof = self.PROFS.get(primary, 0)
 
         if isinstance(secondary, int): self.secondary_prof = secondary
         else: self.secondary_prof = self.PROFS.get(secondary, 0)
 
-    def add_attribute(self, global_id, value):
-        # C'est ici que la magie opère : on convertit l'ID global (ex: 44) en local (0)
-        local_id = self.ATTR_MAP.get(global_id)
-        
-        if local_id is None:
-            # Fallback de sécurité : si l'ID est inconnu, on le met à 0 pour éviter le crash
-            # Cela permet de débuguer si votre CSV contient un ID exotique
-            local_id = 0 
-        
-        self.attributes.append((local_id, value))
+    def add_attribute(self, attr_id, value):
+        # On ignore les IDs négatifs (Rangs PvE)
+        if attr_id < 0: return
+        self.attributes.append((attr_id, value))
 
     def set_skills(self, skill_ids):
-        # Sécurité : remplit avec des 0 si moins de 8 skills
+        # Remplit avec des 0 si < 8 skills
         if len(skill_ids) < 8:
             skill_ids += [0] * (8 - len(skill_ids))
         self.skills = skill_ids[:8]
 
+    def _calc_bits_needed(self, value):
+        """Calcule le nombre de bits nécessaires pour stocker une valeur."""
+        if value == 0: return 0
+        return value.bit_length()
+
     def generate_code(self):
         stream = BitStream()
         
-        # 1. Header (Type 14, Version 0) - Ordre strict
-        stream.write(14, 4) 
-        stream.write(0, 4)  
+        # --- 1. HEADER ---
+        # Type 14 (0xE) + Version 0
+        stream.write(14, 4)
+        stream.write(0, 4)
 
-        # 2. Profession Length (2 bits) -> 0 = Standard
-        stream.write(0, 2)
+        # --- 2. PROFESSIONS ---
+        # Calcul de la taille nécessaire pour les IDs de profession
+        # Formule doc: bits = code * 2 + 4.
+        # Max ID est 10 (Dervish), donc 4 bits suffisent (Code 0).
+        max_prof_id = max(self.primary_prof, self.secondary_prof)
+        bits_needed = max(4, self._calc_bits_needed(max_prof_id))
+        
+        # On doit trouver le 'code' tel que: bits <= code * 2 + 4
+        # Pour GW1 standard (max ID 10), code est toujours 0 (4 bits).
+        prof_code = 0 
+        if bits_needed > 4: prof_code = 1 # Si un jour ID > 15 (jamais arrivé)
+        
+        stream.write(prof_code, 2)
+        prof_bits = (prof_code * 2) + 4
+        stream.write(self.primary_prof, prof_bits)
+        stream.write(self.secondary_prof, prof_bits)
 
-        # 3. Professions (4 bits each)
-        stream.write(self.primary_prof, 4)
-        stream.write(self.secondary_prof, 4)
+        # --- 3. ATTRIBUTES ---
+        count = len(self.attributes)
+        stream.write(count, 4)
 
-        # 4. Attribute Count (4 bits)
-        stream.write(len(self.attributes), 4)
+        if count > 0:
+            # Trouver l'ID max (ex: 44 pour Mysticism)
+            max_attr_id = max(attr[0] for attr in self.attributes)
+            # Calculer bits nécessaires. Ex: 44 nécessite 6 bits.
+            attr_bits_needed = max(4, self._calc_bits_needed(max_attr_id))
+            
+            # Formule doc: bits = code + 4
+            # Code = bits - 4
+            attr_code = attr_bits_needed - 4
+            
+            stream.write(attr_code, 4)
+            
+            for attr_id, value in self.attributes:
+                stream.write(attr_id, attr_bits_needed) # ID sur X bits
+                stream.write(value, 4) # Points toujours sur 4 bits
+        else:
+            # Si pas d'attributs, code 0
+            stream.write(0, 4)
 
-        # 5. Attributes (4 bits LocalID + 4 bits Value)
-        for local_id, value in self.attributes:
-            stream.write(local_id, 4)
-            stream.write(value, 4)
-
-        # 6. Skills (12 bits each)
+        # --- 4. SKILLS ---
+        # Formule doc: bits = code + 8
+        # Standard skill IDs vont jusqu'à ~3000 -> 12 bits -> Code 4
+        max_skill_id = max(self.skills)
+        skill_bits_needed = max(8, self._calc_bits_needed(max_skill_id))
+        skill_code = skill_bits_needed - 8
+        
+        stream.write(skill_code, 4)
         for skill_id in self.skills:
-            stream.write(skill_id, 12)
+            stream.write(skill_id, skill_bits_needed)
+
+        # --- 5. TAIL ---
+        # "1 Bit - Always zero"
+        stream.write(0, 1)
 
         return stream.get_gw_base64()
