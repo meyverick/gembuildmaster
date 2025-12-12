@@ -1,119 +1,157 @@
-import sys
-
-class BitStream:
-    """Version simplifiée et robuste pour éviter les erreurs de bitwise."""
+class BitWriter:
+    """
+    Helper class to write bits into a Base64 string in lowest-bit-first order.
+    Unlike standard Base64 which processes byte-aligned data MSB-first,
+    GW1 templates are a continuous stream of bits packed into 6-bit chunks LSB-first.
+    """
     def __init__(self):
-        self.bits = [] # On stocke les bits comme une liste de 0 et 1 (plus lent mais sûr)
+        self._value = 0
+        self._bit_count = 0
+        self._output = []
+        self._chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
     def write(self, value, num_bits):
-        # Convertit la valeur en binaire (ex: 14 -> '1110')
-        bin_str = format(value, f'0{num_bits}b')
-        # Guild Wars lit LSB (Least Significant Bit) en premier
-        # Donc on inverse la chaîne pour l'écrire
-        self.bits.extend([int(b) for b in reversed(bin_str)])
+        """Writes an integer value using the specified number of bits."""
+        # Mask value to ensure it fits
+        value &= (1 << num_bits) - 1
+        
+        # Add bits to the accumulator
+        self._value |= (value << self._bit_count)
+        self._bit_count += num_bits
 
-    def get_gw_base64(self):
-        chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-        encoded = ""
-        # On lit par paquets de 6 bits
-        for i in range(0, len(self.bits), 6):
-            chunk = self.bits[i:i+6]
-            # Si le dernier paquet est incomplet, on complète avec des 0
-            if len(chunk) < 6:
-                chunk.extend([0] * (6 - len(chunk)))
-            
-            # Reconversion bit list -> int (LITTLE ENDIAN)
-            val = 0
-            for idx, bit in enumerate(chunk):
-                val += bit * (2**idx)
-            encoded += chars[val]
-        return encoded
+        # Extract complete 6-bit chunks
+        while self._bit_count >= 6:
+            chunk = self._value & 0x3F
+            self._output.append(self._chars[chunk])
+            self._value >>= 6
+            self._bit_count -= 6
+
+    def get_code(self):
+        """Finalizes the stream and returns the string."""
+        # Flush remaining bits if any
+        if self._bit_count > 0:
+            chunk = self._value & 0x3F
+            self._output.append(self._chars[chunk])
+        
+        return "".join(self._output)
+
 
 class BuildTemplate:
-    PROFS = {
-        'None': 0, 'Warrior': 1, 'Ranger': 2, 'Monk': 3, 'Necromancer': 4,
-        'Mesmer': 5, 'Elementalist': 6, 'Assassin': 7, 'Ritualist': 8,
-        'Paragon': 9, 'Dervish': 10
-    }
-
     def __init__(self):
-        self.primary_prof = 0
-        self.secondary_prof = 0
-        self.attributes = [] 
-        self.skills = [0] * 8 
-
-    def set_profession(self, primary, secondary='None'):
-        # Accepte ID (int) ou Nom (str)
-        p_id = primary if isinstance(primary, int) else self.PROFS.get(primary, 0)
-        s_id = secondary if isinstance(secondary, int) else self.PROFS.get(secondary, 0)
-        self.primary_prof = p_id
-        self.secondary_prof = s_id
-        print(f"DEBUG: Set Professions -> Prim: {p_id}, Sec: {s_id}")
+        self.primary_profession = 0
+        self.secondary_profession = 0
+        self.attributes = [] # List of tuples (id, value)
+        self.skills = [0] * 8 # Always 8 slots
+    
+    def set_profession(self, primary, secondary):
+        """Sets the primary and secondary profession IDs."""
+        self.primary_profession = primary
+        self.secondary_profession = secondary
 
     def add_attribute(self, attr_id, value):
-        # CRITIQUE : On ignore les IDs négatifs (Rangs PvE comme Sunspear -2)
-        # Ils ne doivent PAS être dans le template code.
-        if attr_id < 0: 
-            print(f"DEBUG: Skipped PvE Attribute ID {attr_id}")
-            return
+        """Adds an attribute rank. Value should be between 0 and 12."""
+        if attr_id < 0: return
         self.attributes.append((attr_id, value))
 
     def set_skills(self, skill_ids):
-        if len(skill_ids) < 8:
-            skill_ids += [0] * (8 - len(skill_ids))
-        self.skills = skill_ids[:8]
-        print(f"DEBUG: Set Skills -> {self.skills}")
-
-    def _calc_bits_needed(self, value):
-        return value.bit_length()
+        """Sets the list of skills. Pads with 0 to ensure 8 slots."""
+        self.skills = skill_ids[:8] + [0] * (8 - len(skill_ids))
 
     def generate_code(self):
-        try:
-            stream = BitStream()
-            
-            # 1. HEADER
-            stream.write(14, 4) # Type
-            stream.write(0, 4)  # Version
+        """Compiles the build data into a Base64 template string."""
+        writer = BitWriter()
 
-            # 2. PROFESSIONS
-            max_prof_id = max(self.primary_prof, self.secondary_prof)
-            bits_needed = max(4, self._calc_bits_needed(max_prof_id))
-            prof_code = 1 if bits_needed > 4 else 0
-            
-            stream.write(prof_code, 2)
-            prof_bits = (prof_code * 2) + 4
-            stream.write(self.primary_prof, prof_bits)
-            stream.write(self.secondary_prof, prof_bits)
+        # Attributes must be sorted by ID for valid templates
+        sorted_attributes = sorted(self.attributes, key=lambda x: x[0])
 
-            # 3. ATTRIBUTES
-            count = len(self.attributes)
-            stream.write(count, 4)
+        # --- 1. Header ---
+        # Type 14 (0xE) - 4 bits
+        writer.write(14, 4)
+        # Version 0 - 4 bits
+        writer.write(0, 4)
 
-            if count > 0:
-                max_attr_id = max(attr[0] for attr in self.attributes)
-                attr_bits_needed = max(4, self._calc_bits_needed(max_attr_id))
-                attr_code = attr_bits_needed - 4
-                
-                stream.write(attr_code, 4)
-                for attr_id, value in self.attributes:
-                    stream.write(attr_id, attr_bits_needed)
-                    stream.write(value, 4)
-            else:
-                stream.write(0, 4) # Dummy code if no attributes
+        # --- 2. Professions ---
+        # Determine bit width needed for profession IDs
+        max_prof_id = max(self.primary_profession, self.secondary_profession)
+        prof_code = 0
+        # Formula: bits = code * 2 + 4
+        while (prof_code * 2 + 4) < self._min_bits_for(max_prof_id):
+            prof_code += 1
+        prof_bit_width = prof_code * 2 + 4
+        
+        writer.write(prof_code, 2)
+        writer.write(self.primary_profession, prof_bit_width)
+        writer.write(self.secondary_profession, prof_bit_width)
 
-            # 4. SKILLS
-            max_skill_id = max(self.skills)
-            skill_bits_needed = max(8, self._calc_bits_needed(max_skill_id))
-            skill_code = skill_bits_needed - 8
-            
-            stream.write(skill_code, 4)
-            for skill_id in self.skills:
-                stream.write(skill_id, skill_bits_needed)
+        # --- 3. Attributes ---
+        writer.write(len(sorted_attributes), 4)
 
-            # 5. TAIL
-            stream.write(0, 1)
+        if sorted_attributes:
+            max_attr_id = max(a[0] for a in sorted_attributes)
+            attr_code = 0
+            # Formula: bits = code + 4
+            while (attr_code + 4) < self._min_bits_for(max_attr_id):
+                attr_code += 1
+            attr_bit_width = attr_code + 4
+        else:
+            attr_code = 0
+            attr_bit_width = 4
 
-            return stream.get_gw_base64()
-            
-        except Exception as e:
-            return f"ERROR generating code: {str(e)}"
+        writer.write(attr_code, 4)
+
+        for attr_id, value in sorted_attributes:
+            writer.write(attr_id, attr_bit_width)
+            writer.write(value, 4)
+
+        # --- 4. Skills ---
+        max_skill_id = max(self.skills)
+        skill_code = 0
+        # Formula: bits = code + 8
+        while (skill_code + 8) < self._min_bits_for(max_skill_id):
+            skill_code += 1
+        skill_bit_width = skill_code + 8
+
+        writer.write(skill_code, 4)
+
+        for skill_id in self.skills:
+            writer.write(skill_id, skill_bit_width)
+
+        # --- 5. Tail ---
+        # 1 Bit - Always zero
+        writer.write(0, 1)
+
+        return writer.get_code()
+
+    def _min_bits_for(self, value):
+        if value == 0: return 1
+        return value.bit_length()
+
+# --- Usage Example ---
+if __name__ == "__main__":
+    build = BuildTemplate()
+    
+    # 1. Set Professions: Dervish (10) / Paragon (9)
+    build.set_profession(10, 9)
+
+    # 2. Add Attributes
+    # (Order doesn't matter here, generator sorts them)
+    build.add_attribute(43, 12) # Earth Prayers
+    build.add_attribute(41, 10) # Scythe Mastery
+    build.add_attribute(44, 9)  # Mysticism
+    build.add_attribute(38, 9)  # Command
+
+    # 3. Set Skills
+    build.set_skills([
+        1759, # Vow of Strength
+        1510, # Sand Shards
+        2116, # Staggering Force
+        1484, # Mystic Sweep
+        1485, # Eremite's Attack
+        1516, # Mystic Regeneration
+        1558, # "Go for the Eyes!"
+        1595  # "Fall Back!"
+    ])
+
+    code = build.generate_code()
+    print("Generated Template Code:", code)
+    # Expected: OgGjkyslqS8E7w+GvF9G5G0G
