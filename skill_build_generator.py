@@ -126,32 +126,26 @@ class BuildTemplate:
         if value == 0: return 1
         return value.bit_length()
 
+def generate_build(prim, sec, attrs, skills):
+    """
+    Simple entry point for the AI.
+    prim, sec: Integers
+    attrs: List of tuples [(id, val), ...]
+    skills: List of Integers
+    """
+    bt = BuildTemplate()
+    bt.set_profession(prim, sec)
+    for a_id, a_val in attrs:
+        bt.add_attribute(a_id, a_val)
+    bt.set_skills(skills)
+    return bt.generate_code()
+
 # --- Usage Example ---
 if __name__ == "__main__":
-    build = BuildTemplate()
-    
-    # 1. Set Professions: Dervish (10) / Paragon (9)
-    build.set_profession(10, 9)
+    prim_id = 10
+    sec_id = 9
+    attributes = [(44, 9), (41, 10), (38, 9)] # List of (ID, Value)
+    skills = [1759, 1510, 2116, 1484, 1485, 1516, 1558, 1595]
 
-    # 2. Add Attributes
-    # (Order doesn't matter here, generator sorts them)
-    build.add_attribute(43, 12) # Earth Prayers
-    build.add_attribute(41, 10) # Scythe Mastery
-    build.add_attribute(44, 9)  # Mysticism
-    build.add_attribute(38, 9)  # Command
-
-    # 3. Set Skills
-    build.set_skills([
-        1759, # Vow of Strength
-        1510, # Sand Shards
-        2116, # Staggering Force
-        1484, # Mystic Sweep
-        1485, # Eremite's Attack
-        1516, # Mystic Regeneration
-        1558, # "Go for the Eyes!"
-        1595  # "Fall Back!"
-    ])
-
-    code = build.generate_code()
+    code = generate_build(prim_id, sec_id, attributes, skills)
     print("Generated Template Code:", code)
-    # Expected: OgGjkyslqS8E7w+GvF9G5G0G
