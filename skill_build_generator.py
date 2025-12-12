@@ -128,7 +128,7 @@ class BuildTemplate:
 
 def generate_build(prim, sec, attrs, skills):
     """
-    Simple entry point for the AI.
+    Simple entry point.
     prim, sec: Integers
     attrs: List of tuples [(id, val), ...]
     skills: List of Integers
@@ -142,10 +142,18 @@ def generate_build(prim, sec, attrs, skills):
 
 # --- Usage Example ---
 if __name__ == "__main__":
-    prim_id = 10
-    sec_id = 9
-    attributes = [(44, 9), (41, 10), (38, 9)] # List of (ID, Value)
+    # Example: Dervish / Paragon
+    prim_id = 10 # Dervish
+    sec_id = 9 # Paragon
+    
+    # Attributes: 
+    # 44: Mysticism (9), 41: Earth Prayers (10), 38: Scythe Mastery (9)
+    attributes = [(44, 9), (41, 10), (38, 9)] 
+    
+    # Skills:
+    # 1759: Vow of Strength, 1510: Shadow Refuge, etc.
     skills = [1759, 1510, 2116, 1484, 1485, 1516, 1558, 1595]
 
     code = generate_build(prim_id, sec_id, attributes, skills)
     print("Generated Template Code:", code)
+    # Expected Output (approx): OgmjYmpKbSfbmXEhMXNXsXWY7YA
